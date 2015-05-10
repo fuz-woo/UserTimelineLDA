@@ -7,15 +7,18 @@ from numpy import random as nprand
 import copy as cp
 import corpus as cputil
 
-corpus = cputil.load_corpus("corpus_filtered.final")
-corpus = filter(lambda c:len(c[0])>48,corpus)
+corpus = cputil.load_corpus("corpus-formatted.csv")
+
+cc = [([w for w in doc if len(w)>1 and not w.isdigit() and not w.lower().islower()],ul) for doc,ul in corpus]
+corpus = [d for d in cc if len(d[0])>43]
 
 
-class UserLDA:
+class UserTimelineLDA:
     def __init__(self,corpus,alpha=0.1,beta=0.01,gamma=0.01,K=20,n_iter=300):
         self.corpus = corpus
         self.corpus_word = [w for w,_ in self.corpus]
-        self.corpus_user = [u for _,u in self.corpus]
+        self.corpus_user = [[u for t,u in ul] for _,ul in self.corpus]
+        self.corpus_timestamp = [[t for t,u in ul] for _,ul in self.corpus]
         self.M = len(self.corpus)
         self.NW = sum(map(len,self.corpus_word))
         self.NU = sum(map(len,self.corpus_user))
@@ -51,6 +54,8 @@ class UserLDA:
         self.n_t_sum = [0 for m in range(self.M)]
         self.n_c = [{u:0 for u in self.udic} for c in range(self.C)]
         self.n_c_sum = [0 for c in range(self.C)]
+        self.ts = [[] for c in range(self.C)]
+        self.ts_sum = [0. for c in range(self.C)]
 
         for m in range(self.M):
             doc_word = self.corpus_word[m]
@@ -65,15 +70,17 @@ class UserLDA:
 
             for i in range(len(doc_user)):
                 u = self.corpus_user[m][i]
+                ts = self.corpus_timestamp[m][i]
                 c = self.communities[m][i]
                 self.n_t[m][c] += 1
                 self.n_c[c][u] += 1
                 self.n_t_sum[m] += 1
                 self.n_c_sum[c] += 1
 
+        self.theta = [[0 for k in range(self.K)] for m in range(self.M)]
         self.phi = [{w:0 for w in self.wdic} for k in range(self.K)]
         self.rho = [{u:0 for u in self.udic} for c in range(self.C)]
-        self.theta = [[0 for k in range(self.K)] for m in range(self.M)]
+        self.psi = [(0.8,2) for c in range(self.C)]
         self.nstats = 0
 
         self.perplexities = []
@@ -118,6 +125,7 @@ class UserLDA:
                 #print "sampling communities %s/%s , %s/%s" % (m,len(self.corpus),i,len(du))
                 c = self.communities[m][ui]
                 u = self.corpus_user[m][ui]
+                ts = self.corpus_timestamp[m][ui]
                 self.n_t[m][c] -= 1
                 self.n_c[c][u] -= 1
                 self.n_t_sum[m] -= 1
@@ -130,20 +138,15 @@ class UserLDA:
                 self.n_c[newc][u] += 1            
                 self.n_t_sum[m] += 1
                 self.n_c_sum[newc] += 1
+                self.ts[newc].append(ts)
+                self.ts_sum[newc] += ts
 
 
     def sample_topic(self,m,wi):
-        z = self.topics[m][wi]
         w = self.corpus_word[m][wi]
         
-        msum = self.n_m_sum[m] + self.n_t_sum[m] + self.Kalpha
-#        def phik(k):
-#            return (self.n_z[k][w] + self.beta) / (self.n_z_sum[k] + self.wsize * self.beta)
-#        def thetam(k):
-#            return (self.n_m[m][k] + self.n_t[m][k] + self.alpha) / msum)
-#        pz = [phik(k) * thetam(k) for k in range(self.K)]
-        
-        pz = [( self.n_m[m][k] + self.n_t[m][k] + self.alpha ) * ( self.n_z[k][w] + self.beta ) / ( msum * (self.n_z_sum[k] + self.wbeta ) ) for k in range(self.K)]
+#        msum = self.n_m_sum[m] + self.n_t_sum[m] + self.Kalpha
+        pz = [( self.n_m[m][k] + self.n_t[m][k] + self.alpha ) * ( self.n_z[k][w] + self.beta ) / (self.n_z_sum[k] + self.wbeta) for k in range(self.K)]
 
         _sum = sum(pz)
         pz = [pi/_sum for pi in pz]
@@ -152,12 +155,11 @@ class UserLDA:
         return sample
         
     def sample_community(self,t,ui):
-        c = self.communities[t][ui]
         u = self.corpus_user[t][ui]
+        ts = self.corpus_timestamp[t][ui]
         
-        msum = self.n_t_sum[t] + self.n_m_sum[t] + self.C * self.alpha
-        
-        pc = [( self.n_t[t][c] + self.n_m[t][c] + self.alpha ) * ( self.n_c[c][u] + self.gamma ) / ( msum * ( self.n_c_sum[c] + self.ugamma ) ) for c in range(self.C)]
+#        msum = self.n_t_sum[t] + self.n_m_sum[t] + self.C * self.alpha
+        pc = [self.betap(ts,self.psi[c]) * ( self.n_t[t][c] + self.n_m[t][c] + self.alpha ) * ( self.n_c[c][u] + self.gamma ) / (self.n_c_sum[c] + self.ugamma) for c in range(self.C)]
                 
         _sum = sum(pc)
         pc = [pi/_sum for pi in pc]
@@ -171,17 +173,18 @@ class UserLDA:
         self.phi = [{w:(self.n_z[k][w] + self.beta) / (self.n_z_sum[k] + self.wbeta) for w in self.wdic} for k in range(self.K)]
         self.rho = [{u:(self.n_c[c][u] + self.gamma) / (self.n_c_sum[c] + self.ugamma) for u in self.udic} for c in range(self.C)]
 
-#        for m in range(self.M):
-#            for k in range(self.K):
-#                self.theta[m][k] = (self.n_m[m][k] + self.n_t[m][k] + self.alpha) / (self.n_m_sum[m] + self.n_t_sum[m] + self.K * self.alpha) 
-#
-#        for k in range(self.K):
-#            for w in self.wdic:
-#                self.phi[k][w] = (self.n_z[k][w] + self.beta) / (self.n_z_sum[k] + self.wsize * self.beta)
-#
-#        for c in range(self.C):
-#            for u in self.udic:
-#                self.rho[c][u] = (self.n_c[c][u] + self.gamma) / (self.n_c_sum[c] + self.usize * self.gamma)
+        for c in range(self.C):
+            _t = self.ts_sum[c] / self.n_c_sum[c]
+            _var = sum([(ts-_t)**2 for ts in self.ts[c]]) / self.n_c_sum[c]
+            _m = ( _t * (1 - _t) / _var - 1 )
+            _a = _t * _m
+            _b = (1-_t) * _m
+            if _a+_b > 160:
+                _a,_b = 160*_a/(_a+_b),160*_b/(_a+_b)
+            self.psi[c] = (_a,_b)
+            self.ts[c] = []
+            self.ts_sum[c] = 0.
+            print c,_t,_var,_a,_b
         self.nstats += 1
 
     def show_topics(self,num_topics=20,num_words=20):
@@ -225,6 +228,15 @@ class UserLDA:
                 pplex += math.log(likelihood) / self.NU
         return math.exp(0. - pplex)
 
+    def betap(self,x,(a,b)):
+        B = 0
+        try:
+            B = math.gamma(a+b) / ( math.gamma(a) * math.gamma(b) )
+        except Exception as e:
+            print x,a,b
+            raise e
+        return B * (x**(a-1)) * ((1-x)**(b-1))
+
     def choice(self,p):
         r = random.random()
         s = 0.0
@@ -235,7 +247,7 @@ class UserLDA:
             why it'll be so slow when coded as follow:
             if s >= r: return i
             '''
-lda = UserLDA(corpus)
+lda = UserTimelineLDA(corpus)
 
 
 

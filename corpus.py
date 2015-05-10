@@ -19,6 +19,7 @@ def load_corpus(fn):
     fd = open(fn)
     for line in fd:
         k,v = line.strip().decode("utf-8").split("\t\t")
-        corpus.append((k.strip().split(' '),v.strip().split(',')))
+        doc,ul = (k.strip().split(' '),map(lambda s:s.split(","),v.strip().split(' ')))
+        corpus.append((doc,[(float(t),u) for t,u in ul]))
     fd.close()
     return corpus
