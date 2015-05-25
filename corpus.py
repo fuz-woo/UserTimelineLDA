@@ -38,6 +38,11 @@ def format_date(t):
 def first_week(t,u):
     return t < sunday
 
+def format_date_daily(t):
+    return t%86400 / 86400.
+
+
+
 def format_corpus(fn,limit=length_limit,filter_doc=None,filter_ul=first_week,format_date=format_date,stop_words=set([])):
     corpus = []
     fd = open(fn)
